@@ -1,55 +1,39 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+
+
+class Symbol(BaseModel):
+    """
+    Metadata for a code symbol (function, class, etc.) in the index.
+    Used by search_symbols to return lightweight results without full source.
+    """
+
+    file_path: str
+    symbol_type: Literal["function", "class"]
+    symbol_name: str
+    docstring: str | None = None
+    line_start: int
+    line_end: int
+
+class Implementation(BaseModel):
+    file_path: str
+    symbol_name: str
+    code: str
+    line_start: int
+    line_end: int
+
+class RefactorResult(BaseModel):
+    success: bool
+    file_path: str
+    diff_applied: str
+    error: str | None = None
 
 
 class NodeError(BaseModel):
     node: str
     error_type: str
     message: str
-
-
-class LocalBookData(BaseModel):
-    id: Optional[int] = None
-    isbn: Optional[str] = None
-    title: Optional[str] = None
-    author: Optional[str] = None
-    description: Optional[str] = None
-
-
-class RemoteBookData(BaseModel):
-    raw_source: Dict[str, Any] = Field(default_factory=dict)
-    title: Optional[str] = None
-    author: Optional[str] = None
-    publish_year: Optional[int] = None
-
-
-class BookContext(BaseModel):
-    """
-    Unified, LLM-friendly context object for a book.
-    """
-
-    id: Optional[int] = None
-    isbn: Optional[str] = None
-    title: Optional[str] = None
-    author: Optional[str] = None
-
-    local_data: Optional[LocalBookData] = None
-    remote_data: Optional[RemoteBookData] = None
-
-    combined_view: Dict[str, Any] = Field(default_factory=dict)
-
-    node_errors: List[NodeError] = Field(default_factory=list)
-
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
-    provenance: Dict[str, Any] = Field(default_factory=dict)
-
-    def to_response(self) -> Dict[str, Any]:
-        """
-        Convert to plain dict suitable for MCP tool output.
-        """
-        return self.model_dump()
 

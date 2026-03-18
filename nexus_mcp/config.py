@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,15 +10,11 @@ DATA_DIR = BASE_DIR / "data"
 
 @dataclass
 class Settings:
-    # Local data
-    sqlite_path: Path = DATA_DIR / "books.db"
+    # Repo to index (default: project root)
+    repo_path: Path = BASE_DIR
 
-    # Remote API (OpenLibrary)
-    openlibrary_base_url: str = "https://openlibrary.org"
-
-    # Timeouts (seconds)
-    local_timeout: float = float(os.getenv("NEXUS_LOCAL_TIMEOUT", "1.0"))
-    remote_timeout: float = float(os.getenv("NEXUS_REMOTE_TIMEOUT", "2.0"))
+    # Symbol index (SQLite with FTS5)
+    index_path: Path = DATA_DIR / "symbols.db"
 
 
 def get_settings() -> Settings:
