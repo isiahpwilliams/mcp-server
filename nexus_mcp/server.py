@@ -1,35 +1,23 @@
 from __future__ import annotations
 
-from typing import Any
-
 from mcp.server.fastmcp import FastMCP
 
-from .logic.aggregator import get_book_context
-
-
-app = FastMCP("nexus-mcp")
-
-
-@app.tool()
-async def get_book_context_tool(
-    title: str | None = None,
-    isbn: str | None = None,
-) -> dict[str, Any]:
-    """
-    Fetches book context by querying both the local node and remote node.
-
-    At least one of title or isbn must be provided.
-    """
-    if not title and not isbn:
-        raise ValueError("At least one of 'title' or 'isbn' must be provided.")
-
-    context = await get_book_context(title=title, isbn=isbn)
-    return context
+from nexus_mcp.logic.indexer import search_symbols as search_symbols_logic
+from nexus_mcp.nodes.indexer_node import crawl_and_index
 
 
 def create_app() -> FastMCP:
-    """
-    Factory to create and return the FastMCP application instance.
-    """
-    return app
+    app = FastMCP("nexus-mcp")
 
+    indexed_count = crawl_and_index()
+    print(f"[nexus-mcp] Indexed {indexed_count} symbols.")
+
+    @app.tool()
+    def search_symbols(query: str) -> list[dict]:
+        """
+        Search for functions and classes in the indexed Python repository.
+        """
+        results = search_symbols_logic(query)
+        return [result.model_dump() for result in results]
+
+    return app

@@ -9,6 +9,7 @@ dependencies = [
     "fastmcp",
     "httpx",
     "pydantic",
+    "fastapi>=0.135.1",
 ]
 
 [project.optional-dependencies]
