@@ -8,7 +8,16 @@ from nexus_mcp.config import SETTINGS
 
 
 def _create_tables(conn: sqlite3.Connection) -> None:
-    conn.execute("""
+    # Build/refresh the symbol index.
+    # `symbols` stores structured metadata, and `symbols_fts` is an FTS5 index over
+    # `symbol_name` / `docstring` / `file_path`.
+    conn.executescript(
+        """
+        DROP TRIGGER IF EXISTS symbols_ai;
+        DROP TRIGGER IF EXISTS symbols_ad;
+        DROP TRIGGER IF EXISTS symbols_au;
+        DROP TABLE IF EXISTS symbols_fts;
+
         CREATE TABLE IF NOT EXISTS symbols (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_path TEXT NOT NULL,
@@ -17,9 +26,38 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             docstring TEXT,
             line_start INTEGER NOT NULL,
             line_end INTEGER NOT NULL
-        )
-    """)
-    conn.execute("DELETE FROM symbols")
+        );
+
+        -- Start clean so we don't rely on delete triggers for the rebuild.
+        DELETE FROM symbols;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+            file_path,
+            symbol_type,
+            symbol_name,
+            docstring,
+            content='symbols',
+            content_rowid='id'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+            INSERT INTO symbols_fts(rowid, file_path, symbol_type, symbol_name, docstring)
+            VALUES (new.id, new.file_path, new.symbol_type, new.symbol_name, new.docstring);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+            INSERT INTO symbols_fts(symbols_fts, rowid, file_path, symbol_type, symbol_name, docstring)
+            VALUES ('delete', old.id, old.file_path, old.symbol_type, old.symbol_name, old.docstring);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
+            INSERT INTO symbols_fts(symbols_fts, rowid, file_path, symbol_type, symbol_name, docstring)
+            VALUES ('delete', old.id, old.file_path, old.symbol_type, old.symbol_name, old.docstring);
+            INSERT INTO symbols_fts(rowid, file_path, symbol_type, symbol_name, docstring)
+            VALUES (new.id, new.file_path, new.symbol_type, new.symbol_name, new.docstring);
+        END;
+        """
+    )
     conn.commit()
 
 
