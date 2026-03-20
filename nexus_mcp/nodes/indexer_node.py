@@ -4,7 +4,53 @@ import ast
 import sqlite3
 from pathlib import Path
 
+import tree_sitter_python
+from tree_sitter import Language, Node, Parser
+
 from nexus_mcp.config import SETTINGS
+
+
+PY_LANGUAGE = Language(tree_sitter_python.language())
+PARSER = Parser(PY_LANGUAGE)
+
+
+def _node_text(source_bytes: bytes, node: Node) -> str:
+    return source_bytes[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+
+
+def _find_first_descendant_of_type(start: Node, wanted_type: str) -> Node | None:
+    stack = [start]
+    while stack:
+        node = stack.pop()
+        if node.type == wanted_type:
+            return node
+        for i in range(node.child_count):
+            stack.append(node.child(i))
+    return None
+
+
+def _extract_docstring(container: Node, source_bytes: bytes) -> str | None:
+    body = container.child_by_field_name("body")
+    if body is None or body.child_count == 0:
+        return None
+
+    # In Python, a docstring is the first statement in the body and is represented
+    # as an expression_statement holding a string literal.
+    first_stmt = body.child(0)
+    if first_stmt.type != "expression_statement":
+        return None
+
+    string_node = _find_first_descendant_of_type(first_stmt, "string")
+    if string_node is None:
+        return None
+
+    literal = _node_text(source_bytes, string_node)
+    try:
+        value = ast.literal_eval(literal)
+        return value if isinstance(value, str) else None
+    except Exception:
+        # Fallback: return raw literal text (still useful for the LLM).
+        return literal.strip("\"'")
 
 
 def _create_tables(conn: sqlite3.Connection) -> None:
@@ -87,40 +133,46 @@ def _extract_symbols_from_file(
     file_path: Path,
     repo_path: Path,
 ) -> list[tuple[str, str, str, str | None, int, int]]:
-    source = file_path.read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    source_text = file_path.read_text(encoding="utf-8")
+    source_bytes = source_text.encode("utf-8")
+    tree = PARSER.parse(source_bytes)
+    root_node = tree.root_node
 
     relative_path = str(file_path.relative_to(repo_path))
     symbols: list[tuple[str, str, str, str | None, int, int]] = []
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef):
-            symbols.append((
-                relative_path,
-                "function",
-                node.name,
-                ast.get_docstring(node),
-                node.lineno,
-                getattr(node, "end_lineno", node.lineno),
-            ))
-        elif isinstance(node, ast.AsyncFunctionDef):
-            symbols.append((
-                relative_path,
-                "function",
-                node.name,
-                ast.get_docstring(node),
-                node.lineno,
-                getattr(node, "end_lineno", node.lineno),
-            ))
-        elif isinstance(node, ast.ClassDef):
-            symbols.append((
-                relative_path,
-                "class",
-                node.name,
-                ast.get_docstring(node),
-                node.lineno,
-                getattr(node, "end_lineno", node.lineno),
-            ))
+    # Walk the tree and extract function/class symbols.
+    #
+    # Note: Tree-sitter's line points are 0-based but we store 1-based lines
+    while stack:
+        node = stack.pop()
+
+        symbol_type: str | None = None
+        if node.type == "function_definition":
+            symbol_type = "function"
+        elif node.type == "class_definition":
+            symbol_type = "class"
+
+        if symbol_type:
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                symbol_name = _node_text(source_bytes, name_node)
+                docstring = _extract_docstring(node, source_bytes)
+                line_start = node.start_point[0] + 1
+                line_end = node.end_point[0] + 1
+                symbols.append(
+                    (
+                        relative_path,
+                        symbol_type,
+                        symbol_name,
+                        docstring,
+                        line_start,
+                        line_end,
+                    )
+                )
+
+        for i in range(node.child_count):
+            stack.append(node.child(i))
 
     return symbols
 
@@ -143,7 +195,7 @@ def crawl_and_index(repo_path: Path | None = None) -> int:
         for py_file in _iter_python_files(repo_root):
             try:
                 symbols = _extract_symbols_from_file(py_file, repo_root)
-            except (SyntaxError, UnicodeDecodeError):
+            except UnicodeDecodeError:
                 continue
 
             conn.executemany(
