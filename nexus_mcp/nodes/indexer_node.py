@@ -144,6 +144,7 @@ def _extract_symbols_from_file(
     # Walk the tree and extract function/class symbols.
     #
     # Note: Tree-sitter's line points are 0-based but we store 1-based lines
+    stack: list[Node] = [root_node]
     while stack:
         node = stack.pop()
 
