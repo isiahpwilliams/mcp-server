@@ -10,16 +10,22 @@ from nexus_mcp.models import Implementation
 from nexus_mcp.nodes.indexer_node import PARSER, _node_text
 
 
-def _resolve_file_path(symbol_name: str, file_path: str | None) -> Path:
+def _resolve_file_path(symbol_name: str, file_path: str | None, line_start: int | None) -> Path:
     if file_path is not None:
         return (SETTINGS.repo_path / file_path).resolve()
 
     conn = sqlite3.connect(SETTINGS.index_path)
     try:
-        rows = conn.execute(
-            "SELECT file_path FROM symbols WHERE symbol_name = ?",
-            (symbol_name,),
-        ).fetchall()
+        if line_start is None:
+            rows = conn.execute(
+                "SELECT file_path, line_start, line_end FROM symbols WHERE symbol_name = ?",
+                (symbol_name,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT file_path, line_start, line_end FROM symbols WHERE symbol_name = ? AND line_start = ?",
+                (symbol_name, line_start),
+            ).fetchall()
     finally:
         conn.close()
 
@@ -29,15 +35,17 @@ def _resolve_file_path(symbol_name: str, file_path: str | None) -> Path:
             "Run indexing or pass file_path explicitly."
         )
     if len(rows) > 1:
-        paths = sorted({r[0] for r in rows})
+        paths = sorted({f"{r[0]}:{r[1]}-{r[2]}" for r in rows})
         raise ValueError(
-            f"Multiple files contain {symbol_name!r}: {paths}. "
-            "Pass file_path to disambiguate."
+            f"Multiple matches for {symbol_name!r}: {paths}. "
+            "Pass file_path, or pass line_start from search_symbols to disambiguate."
         )
     return (SETTINGS.repo_path / rows[0][0]).resolve()
 
 
-def _find_definition_node(root: Node, source_bytes: bytes, symbol_name: str) -> Node | None:
+def _find_definition_node(
+    root: Node, source_bytes: bytes, symbol_name: str, line_start: int | None
+) -> Node | None:
     stack: list[Node] = [root]
     while stack:
         node = stack.pop()
@@ -45,24 +53,26 @@ def _find_definition_node(root: Node, source_bytes: bytes, symbol_name: str) -> 
             name_node = node.child_by_field_name("name")
             if name_node is not None:
                 name = _node_text(source_bytes, name_node).strip()
-                if name == symbol_name:
+                if name == symbol_name and (line_start is None or (node.start_point[0] + 1) == line_start):
                     return node
         for i in range(node.child_count - 1, -1, -1):
             stack.append(node.child(i))
     return None
 
 
-def get_implementation(symbol_name: str, file_path: str | None = None) -> Implementation:
+def get_implementation(
+    symbol_name: str, file_path: str | None = None, line_start: int | None = None
+) -> Implementation:
     """
     Read the file, locate the symbol with Tree-sitter, return its source slice.
     """
-    abs_path = _resolve_file_path(symbol_name, file_path)
+    abs_path = _resolve_file_path(symbol_name, file_path, line_start)
     if not abs_path.is_file():
         raise FileNotFoundError(f"File not found: {abs_path}")
 
     source_bytes = abs_path.read_bytes()
     tree = PARSER.parse(source_bytes)
-    node = _find_definition_node(tree.root_node, source_bytes, symbol_name)
+    node = _find_definition_node(tree.root_node, source_bytes, symbol_name, line_start)
     if node is None:
         raise ValueError(f"Symbol {symbol_name!r} not found in {abs_path}")
 

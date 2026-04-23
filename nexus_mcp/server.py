@@ -26,11 +26,13 @@ def create_app() -> FastMCP:
         return [result.model_dump() for result in results]
 
     @app.tool()
-    def get_implementation(symbol_name: str, file_path: str | None = None) -> dict:
+    def get_implementation(
+        symbol_name: str, file_path: str | None = None, line_start: int | None = None
+    ) -> dict:
         """
         Get the implementation of a function or class.
         """
-        implementation = get_implementation_logic(symbol_name, file_path)
+        implementation = get_implementation_logic(symbol_name, file_path, line_start)
         return implementation.model_dump()
 
     @app.tool()
