@@ -65,3 +65,4 @@ def search_symbols(query: str) -> list[Symbol]:
         return [Symbol(**dict(row)) for row in rows]
     finally:
         conn.close()
+
