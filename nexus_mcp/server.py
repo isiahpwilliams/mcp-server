@@ -7,15 +7,12 @@ from nexus_mcp.logic.refactor import (
     suggest_refactor as suggest_refactor_logic,
     suggest_refactor_llm as suggest_refactor_llm_logic,
 )
-from nexus_mcp.nodes.indexer_node import crawl_and_index
+from nexus_mcp.nodes.indexer_node import crawl_and_index, reindex_file as reindex_file_logic
 from nexus_mcp.nodes.worker_node import get_implementation as get_implementation_logic
 
 
 def create_app() -> FastMCP:
     app = FastMCP("nexus-mcp")
-
-    indexed_count = crawl_and_index()
-    print(f"[nexus-mcp] Indexed {indexed_count} symbols.")
 
     @app.tool()
     def search_symbols(query: str) -> list[dict]:
@@ -24,6 +21,22 @@ def create_app() -> FastMCP:
         """
         results = search_symbols_logic(query)
         return [result.model_dump() for result in results]
+
+    @app.tool()
+    def index_repo() -> dict:
+        """
+        Build/rebuild the full symbol index for the configured repo.
+        """
+        indexed_count = crawl_and_index()
+        return {"success": True, "indexed_count": indexed_count}
+
+    @app.tool()
+    def reindex_file(file_path: str) -> dict:
+        """
+        Incrementally re-index a single file after edits.
+        """
+        indexed_count = reindex_file_logic(file_path=file_path)
+        return {"success": True, "file_path": file_path, "indexed_count": indexed_count}
 
     @app.tool()
     def get_implementation(

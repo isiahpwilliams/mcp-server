@@ -10,5 +10,9 @@ wheels/
 .venv
 .env
 .env.local
+.env.*.local
+.env.*.secret
+.envrc
+*.env
 data/
 data/symbols.db
