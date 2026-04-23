@@ -10,3 +10,5 @@ wheels/
 .venv
 .env
 .env.local
+data/
+data/symbols.db

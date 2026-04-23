@@ -8,7 +8,7 @@ from tree_sitter import Node
 from nexus_mcp.config import SETTINGS
 from nexus_mcp.models import RefactorResult
 from nexus_mcp.nodes.worker_node import get_implementation
-from nexus_mcp.nodes.indexer_node import PARSER, _node_text
+from nexus_mcp.nodes.indexer_node import PARSER, _node_text, reindex_file
 from nexus_mcp.llm.gemini_client import generate_replacement_symbol_code
 
 
@@ -192,6 +192,17 @@ def suggest_refactor(file_path: str, symbol_name: str, instructions: str) -> Ref
 
     # Write file only after passing the safety gate.
     abs_path.write_bytes(new_bytes)
+
+    # Keep the index fresh for subsequent search/fetch calls.
+    try:
+        reindex_file(file_path=file_path)
+    except Exception as exc:  # noqa: BLE001
+        return RefactorResult(
+            success=True,
+            file_path=file_path,
+            diff_applied="",
+            error=f"Refactor applied, but reindex failed: {type(exc).__name__}: {exc}",
+        )
 
     new_text = new_bytes.decode("utf-8", errors="replace")
     diff = "".join(
