@@ -12,6 +12,7 @@ dependencies = [
     "fastapi>=0.135.1",
     "tree-sitter",
     "tree-sitter-python",
+    "google-genai",
 ]
 
 [project.optional-dependencies]

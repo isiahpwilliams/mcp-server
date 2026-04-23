@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import difflib
-from pathlib import Path
+import sqlite3
 
 from tree_sitter import Node
 
 from nexus_mcp.config import SETTINGS
 from nexus_mcp.models import RefactorResult
+from nexus_mcp.nodes.worker_node import get_implementation
 from nexus_mcp.nodes.indexer_node import PARSER, _node_text
+from nexus_mcp.llm.gemini_client import generate_replacement_symbol_code
 
 
 def _find_definition_node(root: Node, source_bytes: bytes, symbol_name: str) -> Node | None:
@@ -201,4 +203,69 @@ def suggest_refactor(file_path: str, symbol_name: str, instructions: str) -> Ref
         )
     )
     return RefactorResult(success=True, file_path=file_path, diff_applied=diff, error=None)
+
+
+def _symbol_outline_for_file(file_path: str) -> str:
+    conn = sqlite3.connect(SETTINGS.index_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT symbol_type, symbol_name, line_start, line_end, docstring
+            FROM symbols
+            WHERE file_path = ?
+            ORDER BY line_start ASC
+            """,
+            (file_path,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    lines: list[str] = []
+    for r in rows:
+        doc = (r["docstring"] or "").strip().replace("\n", " ")
+        if len(doc) > 160:
+            doc = doc[:157] + "..."
+        lines.append(
+            f"- {r['symbol_type']} {r['symbol_name']} ({r['line_start']}-{r['line_end']}): {doc}".rstrip()
+        )
+    return "\n".join(lines)
+
+
+def suggest_refactor_llm(file_path: str, symbol_name: str, instructions: str) -> RefactorResult:
+    """
+    LLM-driven symbol-scoped refactor.
+
+    - Fetch current symbol implementation
+    - Provide a small outline of other symbols in the file (from the index)
+    - Ask Gemini to return the full replacement symbol code ONLY
+    - Apply via `suggest_refactor` (Tree-sitter safety gate)
+    """
+    impl = get_implementation(symbol_name=symbol_name, file_path=file_path)
+    outline = _symbol_outline_for_file(file_path)
+
+    prompt = "\n".join(
+        [
+            "You are refactoring a Python codebase.",
+            "Return ONLY the full replacement code for the specified symbol.",
+            "Do not include markdown fences, explanations, or multiple symbols.",
+            "",
+            f"Target file: {file_path}",
+            f"Target symbol: {symbol_name}",
+            "",
+            "Other symbols in this file:",
+            outline or "(none)",
+            "",
+            "Current implementation:",
+            impl.code,
+            "",
+            "Refactor instructions:",
+            instructions.strip(),
+            "",
+            "Return ONLY the updated symbol code (starting with def/async def/class).",
+        ]
+    )
+
+    replacement_code = generate_replacement_symbol_code(prompt)
+    return suggest_refactor(file_path=file_path, symbol_name=symbol_name, instructions=replacement_code)
 
