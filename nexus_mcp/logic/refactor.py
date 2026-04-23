@@ -33,12 +33,30 @@ def _tree_has_error(root: Node) -> bool:
         node = stack.pop()
         if node.type == "ERROR":
             return True
+        # Tree-sitter can represent invalid syntax with "missing" tokens
+        # (e.g. (MISSING ")")) without producing ERROR nodes.
+        if getattr(node, "is_missing", False):
+            return True
         for i in range(node.child_count):
             stack.append(node.child(i))
     return False
 
 
-def _extract_replacement_code(instructions: str) -> str:
+def _first_top_level_definition(root: Node) -> Node | None:
+    """
+    Return the first top-level function/class definition node, if present.
+
+    Tree-sitter-python wraps the file in a `module` node. Top-level statements
+    are direct children of that module.
+    """
+    for i in range(root.child_count):
+        child = root.child(i)
+        if child.type in ("function_definition", "class_definition"):
+            return child
+    return None
+
+
+def _extract_replacement_code(symbol_name: str, instructions: str) -> bytes:
     """
     Symbol-scoped refactor strategy (deterministic):
 
@@ -54,7 +72,48 @@ def _extract_replacement_code(instructions: str) -> str:
             "For symbol-scoped refactors, instructions must be the full replacement "
             "symbol code starting with 'def', 'async def', or 'class'."
         )
-    return code
+
+    replacement_bytes = (code + "\n").encode("utf-8")
+    replacement_tree = PARSER.parse(replacement_bytes)
+    if _tree_has_error(replacement_tree.root_node):
+        raise ValueError("Replacement code does not parse cleanly (Tree-sitter ERROR node).")
+
+    top = _first_top_level_definition(replacement_tree.root_node)
+    if top is None:
+        raise ValueError("Replacement code must contain a top-level def/class.")
+
+    # Hardening 1: ensure the replacement is exactly one *named* top-level symbol.
+    # This rejects cases where the replacement contains multiple defs/classes.
+    named_toplevel: list[Node] = []
+    for i in range(replacement_tree.root_node.child_count):
+        child = replacement_tree.root_node.child(i)
+        if child.is_named:
+            named_toplevel.append(child)
+
+    top_span = (top.start_byte, top.end_byte, top.type)
+    if len(named_toplevel) != 1 or (
+        (named_toplevel[0].start_byte, named_toplevel[0].end_byte, named_toplevel[0].type) != top_span
+    ):
+        raise ValueError("Replacement code must contain only a single top-level symbol.")
+
+    # Hardening 2+3: ensure symbol kind + name match.
+    if top.type == "function_definition" and not (
+        code.startswith("def ") or code.startswith("async def ")
+    ):
+        raise ValueError("Replacement must be a function definition (def/async def).")
+    if top.type == "class_definition" and not code.startswith("class "):
+        raise ValueError("Replacement must be a class definition (class).")
+
+    name_node = top.child_by_field_name("name")
+    if name_node is None:
+        raise ValueError("Replacement symbol has no name node.")
+    found_name = _node_text(replacement_bytes, name_node).strip()
+    if found_name != symbol_name:
+        raise ValueError(
+            f"Replacement symbol name {found_name!r} does not match requested {symbol_name!r}."
+        )
+
+    return replacement_bytes
 
 
 def suggest_refactor(file_path: str, symbol_name: str, instructions: str) -> RefactorResult:
@@ -90,8 +149,15 @@ def suggest_refactor(file_path: str, symbol_name: str, instructions: str) -> Ref
         )
 
     original_slice = original_bytes[target.start_byte : target.end_byte]
-    replacement_text = _extract_replacement_code(instructions)
-    replacement = replacement_text.encode("utf-8")
+    try:
+        replacement = _extract_replacement_code(symbol_name, instructions)
+    except ValueError as exc:
+        return RefactorResult(
+            success=False,
+            file_path=file_path,
+            diff_applied="",
+            error=str(exc),
+        )
 
     # Preserve the original slice's trailing newline convention so no-op
     # replacements don't introduce a file diff.
